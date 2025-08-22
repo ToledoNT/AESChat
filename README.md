@@ -30,12 +30,12 @@ Todas as mensagens trocadas entre os clientes são:
 
 ---
 
+## 📸 Screenshot
+
+![Chat rodando](imagem/imagem1.png)
+
 ## 🚀 Como Compilar
 
 ```bash
 gcc -o server server.c -lssl -lcrypto -lpthread
 gcc -o client client.c -lssl -lcrypto -lpthread
-
-## 📸 Screenshot
-
-![Chat rodando](imagem/Imagem%201.png)
