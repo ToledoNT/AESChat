@@ -34,7 +34,7 @@ Todas as mensagens trocadas entre os clientes são:
 
 ![Chat rodando](imagem/imagem1.png)  
 
-![Chat interface gui](imagem/imagem2.png)  
+![Chat interface gui](imagem/imagem1.2.png)  
 
 
 ---

@@ -127,6 +127,11 @@ void send_msg(GtkWidget *widget, gpointer data) {
     const char *msg = gtk_entry_get_text(GTK_ENTRY(entry_msg));
     if (strlen(msg) == 0) return;
 
+    // Mostrar mensagem no chat local antes de enviar
+    gtk_text_buffer_insert_at_cursor(text_buffer, "Você: ", -1);
+    gtk_text_buffer_insert_at_cursor(text_buffer, msg, -1);
+    gtk_text_buffer_insert_at_cursor(text_buffer, "\n", -1);
+
     unsigned char iv[IV_LEN];
     RAND_bytes(iv, IV_LEN);
     unsigned char cipher[MAX_MSG_LEN];

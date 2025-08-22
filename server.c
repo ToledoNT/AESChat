@@ -41,6 +41,7 @@ static void to_hex(const unsigned char *in, size_t len, char *out) {
     }
     out[2*len] = '\0';
 }
+
 static int from_hex(const char *in, unsigned char *out, size_t out_max, size_t *out_len) {
     size_t n = strlen(in);
     if (n % 2 != 0) return 0;
@@ -106,8 +107,34 @@ static int aes_gcm_decrypt(const unsigned char *ciphertext, int clen,
     return ok ? plen : -1;
 }
 
+// Envio completo de buffer (garante envio total)
+static ssize_t write_all(int fd, const void *buf, size_t count) {
+    size_t left = count;
+    const char *ptr = buf;
+    while (left > 0) {
+        ssize_t written = write(fd, ptr, left);
+        if (written <= 0) return -1;
+        left -= written;
+        ptr += written;
+    }
+    return count;
+}
+
+// Leitura do nome do cliente, garante leitura até newline ou MAX_NAME_LEN-1
+int read_name(int sockfd, char *name, size_t max_len) {
+    size_t idx = 0;
+    while (idx < max_len - 1) {
+        char c;
+        ssize_t r = read(sockfd, &c, 1);
+        if (r <= 0) return -1;
+        if (c == '\n' || c == '\r') break;
+        name[idx++] = c;
+    }
+    name[idx] = '\0';
+    return 0;
+}
+
 void broadcast_plaintext(const char *name, const char *plaintext, int sender_sockfd) {
-    // formata "nome: mensagem" como plaintext, depois recripta por cliente
     char formatted[MAX_NAME_LEN + MAX_MSG_LEN + 3];
     snprintf(formatted, sizeof(formatted), "%s: %s", name, plaintext);
 
@@ -127,15 +154,22 @@ void broadcast_plaintext(const char *name, const char *plaintext, int sender_soc
         size_t packet_len = IV_LEN + (size_t)clen + TAG_LEN;
         unsigned char *packet = malloc(packet_len);
         if (!packet) continue;
+
         memcpy(packet, iv, IV_LEN);
         memcpy(packet + IV_LEN, cipher, clen);
         memcpy(packet + IV_LEN + clen, tag, TAG_LEN);
 
         char *hex_out = malloc(packet_len * 2 + 1);
-        if (!hex_out) { free(packet); continue; }
+        if (!hex_out) {
+            free(packet);
+            continue;
+        }
         to_hex(packet, packet_len, hex_out);
 
-        write(clients[i]->sockfd, hex_out, strlen(hex_out));
+        // Envio completo com write_all
+        if (write_all(clients[i]->sockfd, hex_out, strlen(hex_out)) < 0) {
+            perror("Erro ao enviar para cliente");
+        }
 
         free(packet);
         free(hex_out);
@@ -149,7 +183,7 @@ void *client_handler(void *arg) {
     unsigned char packet[IV_LEN + MAX_MSG_LEN + TAG_LEN];
     unsigned char plaintext[MAX_MSG_LEN + 1];
 
-    // avisa entrada (opcional: como texto puro)
+    // Mensagem de entrada
     {
         char joinmsg[128];
         snprintf(joinmsg, sizeof(joinmsg), "%s entrou no chat.", cli->name);
@@ -163,7 +197,7 @@ void *client_handler(void *arg) {
 
         size_t packet_len = 0;
         if (!from_hex(hex_in, packet, sizeof(packet), &packet_len) || packet_len < IV_LEN + TAG_LEN) {
-            // pode ter sido lixo ou mensagem pura, ignore
+            // Ignorar dados inválidos
             continue;
         }
 
@@ -196,7 +230,8 @@ void *client_handler(void *arg) {
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < client_count; i++) {
         if (clients[i]->sockfd == cli->sockfd) {
-            for (int j = i; j < client_count - 1; j++) clients[j] = clients[j + 1];
+            for (int j = i; j < client_count - 1; j++)
+                clients[j] = clients[j + 1];
             client_count--;
             break;
         }
@@ -218,7 +253,6 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    // Reusar porta para evitar "Address already in use"
     int opt = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("Erro setsockopt");
@@ -262,35 +296,27 @@ int main() {
         cli_info->sockfd = connfd;
         cli_info->addr = cliaddr;
 
-        // lê nome (texto puro)
-        int r = read(connfd, cli_info->name, MAX_NAME_LEN - 1);
-        if (r <= 0) {
+        // lê nome (texto puro, até newline ou limite)
+        if (read_name(connfd, cli_info->name, MAX_NAME_LEN) < 0) {
             printf("Falha ao receber nome do cliente\n");
             close(connfd);
             free(cli_info);
             continue;
         }
-        cli_info->name[r] = '\0';
-        cli_info->name[strcspn(cli_info->name, "\n")] = '\0';
 
         pthread_mutex_lock(&clients_mutex);
-        if (client_count < MAX_CLIENTS) {
-            clients[client_count++] = cli_info;
-            if (pthread_create(&tid, NULL, client_handler, (void *)cli_info) != 0) {
-                perror("Erro ao criar thread");
-                // remove da lista
-                client_count--;
-                close(connfd);
-                free(cli_info);
-            } else {
-                pthread_detach(tid);
-            }
-        } else {
-            printf("Limite de clientes atingido. Conexão recusada.\n");
+        if (client_count >= MAX_CLIENTS) {
+            pthread_mutex_unlock(&clients_mutex);
+            printf("Máximo de clientes atingido\n");
             close(connfd);
             free(cli_info);
+            continue;
         }
+        clients[client_count++] = cli_info;
         pthread_mutex_unlock(&clients_mutex);
+
+        pthread_create(&tid, NULL, &client_handler, (void*)cli_info);
+        pthread_detach(tid);
     }
 
     close(sockfd);
